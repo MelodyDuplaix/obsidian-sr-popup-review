@@ -1,5 +1,6 @@
 import { diffArrays } from "diff";
 import { App, MarkdownView, TFile, moment } from "obsidian";
+import type { ActiveQuestion } from "./review-state";
 
 const SR_PLUGIN_ID = "obsidian-spaced-repetition";
 
@@ -387,6 +388,13 @@ export interface ReviewSession {
      * "open note" action). null when the note could not be identified from SR's internals,
      * in which case the popup hides the menu item. Resolves false if the file no longer exists. */
     openNote: (() => Promise<boolean>) | null;
+    /**
+     * The card's question block as it read when the popup opened (SR's
+     * questionText.original — SR swaps that string after a write, so this is a
+     * copy) and its note's path. Used to tell external tools whether an edit
+     * would touch the open card; null when either is unknown.
+     */
+    question: ActiveQuestion | null;
 }
 
 export type ProbeStatus = "ok" | "missing" | "notReady" | "incompatible";
@@ -643,6 +651,7 @@ export class SRBridge {
 
         const boundSequencer = sequencer;
         const location = noteSource ? `${noteSource.path}:${noteSource.line + 1}` : null;
+        const question = this.activeQuestion(card, noteSource);
         return {
             front: card.front.trimStart(),
             back: card.back,
@@ -673,7 +682,21 @@ export class SRBridge {
             },
             location,
             openNote: noteSource ? () => this.openNoteAt(noteSource) : null,
+            question,
         };
+    }
+
+    /** The question block's text right now plus its note; null when either is unavailable. */
+    private activeQuestion(card: SRCard, noteSource: NoteSource | null): ActiveQuestion | null {
+        try {
+            const path = noteSource?.path;
+            const text = card.question?.questionText?.original;
+            if (typeof path !== "string" || path === "") return null;
+            if (typeof text !== "string" || text === "") return null;
+            return { path, text };
+        } catch {
+            return null; // SR's getters may throw
+        }
     }
 
     /**

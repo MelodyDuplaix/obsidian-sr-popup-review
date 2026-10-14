@@ -173,6 +173,22 @@ export class Scheduler {
             return;
         }
 
+        // Until the popup is up (or known not to come up), no card is fixed yet:
+        // external tools asking whether an edit is safe are told to wait.
+        const endPreparing = this.plugin.reviewState.beginPreparing();
+        try {
+            await this.openAndShow(mode, focusPopup, log);
+        } finally {
+            endPreparing();
+        }
+    }
+
+    private async openAndShow(
+        mode: TickMode,
+        focusPopup: boolean,
+        log: (message: string) => void,
+    ): Promise<void> {
+        const s = this.plugin.settings;
         const filter: DeckFilter = { mode: s.deckFilterMode, paths: s.deckFilterList };
         // Due and new cards are mixed by the ratio of their counts, or by the fixed
         // new-card share when that setting is on; new cards are capped by what is

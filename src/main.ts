@@ -1,4 +1,5 @@
-import { Notice, Plugin, moment, setIcon } from "obsidian";
+import { CliData, Notice, Plugin, TFile, moment, normalizePath, setIcon } from "obsidian";
+import { CheckResult, ReviewStateTracker, checkEdit, decodeCliText } from "./review-state";
 import { SRBridge } from "./sr-bridge";
 import { DiagLog } from "./diaglog";
 import { PopupController } from "./popup";
@@ -17,6 +18,8 @@ export default class SRPopupPlugin extends Plugin {
     diag!: DiagLog;
     popup!: PopupController;
     scheduler!: Scheduler;
+    /** What the popup is doing right now; answers the sr-popup-review:state / :check CLI commands. */
+    reviewState = new ReviewStateTracker();
     globalShortcut!: GlobalShortcutManager;
     /** Result of the last apply() of settings.globalShortcut; drives the settings tab's status message. */
     globalShortcutState: ShortcutResult = "ok";
@@ -75,6 +78,7 @@ export default class SRPopupPlugin extends Plugin {
                 heightRevealed: this.settings.popupHeightRevealed,
             }),
             this.mirrorServer,
+            this.reviewState,
         );
         this.scheduler = new Scheduler(this);
         this.globalShortcut = new GlobalShortcutManager(
@@ -104,6 +108,8 @@ export default class SRPopupPlugin extends Plugin {
 
         if (this.settings.mirrorEnabled) void this.restartMirror();
 
+        this.registerCliHandlers();
+
         this.addSettingTab(new SRPopupSettingTab(this.app, this));
         this.addCommand({
             id: "show-review-popup-now",
@@ -129,6 +135,82 @@ export default class SRPopupPlugin extends Plugin {
         this.updatePauseIndicator();
 
         this.app.workspace.onLayoutReady(() => this.scheduler.start());
+    }
+
+    /**
+     * Obsidian CLI commands for external tools that edit the vault: ask
+     * whether the popup is busy, and whether a given edit would touch the card
+     * it is reviewing. Answers come from memory; anything undecidable is unsafe.
+     */
+    private registerCliHandlers(): void {
+        const register = (...args: Parameters<Plugin["registerCliHandler"]>): void => {
+            try {
+                this.registerCliHandler(...args);
+            } catch (e) {
+                // Throws when the name is already taken; the rest of the plugin works without it.
+                this.diag.log(`ERROR: CLI command ${args[0]} could not be registered: ${String(e)}`);
+            }
+        };
+        register(
+            "sr-popup-review:state",
+            "Show whether the review popup is idle, preparing, showing a card, or writing a rating.",
+            null,
+            () => JSON.stringify(this.reviewState.snapshot()),
+        );
+        register(
+            "sr-popup-review:check",
+            "Check whether replacing text in a note would disturb the card open in the review popup.",
+            {
+                path: { value: "<path>", description: "Vault-relative path of the note to edit", required: true },
+                old: {
+                    value: "<text>",
+                    description: "Exact text to replace (\\n = newline, \\\\ = backslash)",
+                    required: true,
+                },
+                new: { value: "<text>", description: "Replacement text (same escapes; omit to delete)" },
+            },
+            async (params) => JSON.stringify(await this.runCliCheck(params)),
+        );
+    }
+
+    private async runCliCheck(params: CliData): Promise<CheckResult> {
+        const rawPath = params.path;
+        let label = typeof rawPath === "string" ? rawPath : "?";
+        try {
+            // A flag given without a value arrives as the string "true".
+            let result: CheckResult;
+            if (typeof rawPath !== "string" || rawPath === "true" || rawPath.trim() === "") {
+                result = { result: "unsafe", reason: "path missing" };
+            } else if (/^([A-Za-z]:|[\\/])/.test(rawPath.trim())) {
+                // An absolute path never equals the open card's vault path and would
+                // pass as "different note" even when it is the same file.
+                result = { result: "unsafe", reason: "path must be vault-relative" };
+            } else if (typeof params.old !== "string" || params.old === "true") {
+                result = { result: "unsafe", reason: "old text missing" };
+            } else if (params.new === "true") {
+                result = { result: "unsafe", reason: "new text missing" };
+            } else {
+                const path = normalizePath(rawPath);
+                label = path;
+                const oldText = decodeCliText(params.old);
+                const newText = typeof params.new === "string" ? decodeCliText(params.new) : "";
+                result = await checkEdit(
+                    this.reviewState.snapshot(),
+                    path,
+                    async () => {
+                        const file = this.app.vault.getAbstractFileByPath(path);
+                        return file instanceof TFile ? await this.app.vault.read(file) : null;
+                    },
+                    oldText,
+                    newText,
+                );
+            }
+            this.diag.log(`cli check ${label}: ${result.result} (${result.reason})`);
+            return result;
+        } catch (e) {
+            this.diag.log(`ERROR: cli check ${label}: ${String(e)}`);
+            return { result: "unsafe", reason: "internal error" };
+        }
     }
 
     async togglePaused(): Promise<void> {

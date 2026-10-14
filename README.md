@@ -79,6 +79,30 @@ The settings tab also shows whether the Spaced Repetition integration is working
 
 "Today" (today's review count and the daily new-card limit) follows Spaced Repetition's **Start of day** setting. In SR 1.15.4 a bug makes that setting ignored unless hour, minute and second are all non-zero, so to switch days at 5 AM use something like `05:01:01`, then restart Obsidian.
 
+## Working with external tools (Obsidian CLI)
+
+If a script or AI tool edits your flashcard notes while a popup is open, Spaced Repetition may fail to find the card when you rate it. Two commands for Obsidian's command line interface (CLI) let such tools ask first. Enable the command line interface in Obsidian's settings to use them; Obsidian must be running.
+
+`obsidian sr-popup-review:state` — what the popup is doing right now:
+
+```json
+{"state":"showing","path":"Cards/Spanish.md","original":"hola::hello\n<!--SR:!2026-10-08,3,250-->"}
+```
+
+`state` is `idle`, `preparing` (picking a card), `showing` (a card is open) or `writing` (a rating is being saved). `path` / `original` (the open card's whole question block) are set only while `showing` or `writing`.
+
+`obsidian sr-popup-review:check path=<path> old=<text> new=<text>` — would replacing `old` with `new` (once) in that note disturb the open card?
+
+```json
+{"result":"safe","reason":"the open card's text stays intact"}
+```
+
+- Edits to other notes, or while no popup is open, are `safe`.
+- In the open card's note, an edit is `safe` only when `old` appears exactly once and the card's question block is still there, unchanged and exactly once, after the edit.
+- Whenever it cannot tell (a card is being picked or a rating is being saved, the note or text is not found, …) the answer is `unsafe`. Treat a failed command the same way.
+- Pass `path` relative to the vault (an absolute path is `unsafe`).
+- In `old` / `new`, write a newline as `\n`, a tab as `\t` and a backslash as `\\`. Omit `new` to check a deletion.
+
 ## Data safety
 
 - Ratings go through `Spaced Repetition`'s own review sequencer — identical writes to pressing the buttons in its modal (scheduling comment, sibling burying, load balancing, FSRS/SM-2, all of it).
@@ -93,6 +117,10 @@ The settings tab also shows whether the Spaced Repetition integration is working
 - Position is fixed to the bottom-right of the primary display for now.
 
 ## Changelog
+
+### Unreleased
+
+- **Obsidian CLI commands** `sr-popup-review:state` and `sr-popup-review:check`, so external tools that edit your notes can check whether an edit would disturb the card open in the popup (#9)
 
 ### 1.6.0 — 2026-10-10
 

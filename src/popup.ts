@@ -1,6 +1,7 @@
 import { App, Component, MarkdownRenderer, Notice } from "obsidian";
 import { IntervalPreview, RateOutcome, RatingKey, ReviewResponse, ReviewResponseValue, ReviewSession } from "./sr-bridge";
 import type { GlobalShortcutLike } from "./global-shortcut";
+import type { ReviewStateTracker } from "./review-state";
 import { t } from "./i18n";
 
 // ---------------------------------------------------------------------------
@@ -260,6 +261,8 @@ export class PopupController {
      * abort when superseded, so a hung await can never act on a newer popup.
      */
     private generation = 0;
+    /** Ends the "showing" record begun in show(); null when none is active. */
+    private endShowing: (() => void) | null = null;
 
     constructor(
         private app: App,
@@ -278,7 +281,15 @@ export class PopupController {
         },
         /** Optional receiver of the popup's display (local page); null = none. */
         private mirror: MirrorSink | null = null,
+        /** Optional record of what the popup is doing, for external tools; null = none. */
+        private reviewState: ReviewStateTracker | null = null,
     ) {}
+
+    /** Ends this popup's "showing" record, if any. Idempotent. */
+    private endShowingState(): void {
+        this.endShowing?.();
+        this.endShowing = null;
+    }
 
     get isOpen(): boolean {
         try {
@@ -306,6 +317,8 @@ export class PopupController {
         }
         const gen = ++this.generation;
         this.session = session;
+        this.endShowingState(); // defensive: never leave a previous record behind
+        this.endShowing = this.reviewState?.beginShowing(session.question) ?? null;
         this.revealed = false;
 
         // Decided once per popup: the snapshot script is only in this popup's
@@ -333,6 +346,9 @@ export class PopupController {
             });
         } catch (e) {
             console.error("[sr-popup-review] failed to create popup window", e);
+            // No window and no finish(): end the record here, or the card would
+            // read as "showing" until the next popup.
+            this.endShowingState();
             return false;
         }
         this.win = win;
@@ -570,6 +586,7 @@ export class PopupController {
             if (response === undefined || !session) break;
             this.diag(`rating received (${String(event)}); writing...`);
             const started = Date.now();
+            const endWrite = this.reviewState?.beginWrite(session.question);
             const ratePromise = session.rate(response).then(
                 (r): RateOutcome | "error" => r,
                 (e: unknown) => {
@@ -577,6 +594,10 @@ export class PopupController {
                     return "error" as const;
                 },
             );
+            // Ends when the write itself settles, not when the popup gives up on
+            // it (RATE_TIMEOUT_MS): a late write is still a write. ratePromise
+            // never rejects (see above), so this always runs.
+            void ratePromise.then(() => endWrite?.());
             const result = await Promise.race([
                 ratePromise,
                 new Promise<"timeout">((resolve) =>
@@ -712,6 +733,7 @@ export class PopupController {
      * Idempotent: finish() will not report the same session again.
      */
     private markSessionEnd(): void {
+        this.endShowingState();
         if (!this.wasShown) return;
         this.wasShown = false;
         this.onSessionEnd();
@@ -728,6 +750,7 @@ export class PopupController {
         this.wasShown = false;
         this.win = null;
         this.session = null;
+        this.endShowingState();
         try {
             if (win && win.isDestroyed?.() !== true) win.destroy?.();
         } catch {
