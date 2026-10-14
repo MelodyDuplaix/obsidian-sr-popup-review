@@ -1,6 +1,6 @@
 {
   "name": "sr-popup-review",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Review Spaced Repetition flashcards in a small always-on-top popup that appears at regular intervals",
   "main": "main.js",
   "scripts": {

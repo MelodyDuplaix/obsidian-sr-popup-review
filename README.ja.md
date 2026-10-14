@@ -159,7 +159,7 @@ Claude Code を動かす環境で、環境変数 `SRPR_VAULT_ROOT` に vault の
 
 ## 更新履歴
 
-### 未リリース
+### 1.7.0 — 2026-10-14
 
 - **Obsidian CLI のコマンド** `sr-popup-review:state` / `sr-popup-review:check` を追加。ノートを書き換える外部ツールが、その書き換えがポップアップで表示中のカードに影響するかを事前に確かめられるように (#9)
 

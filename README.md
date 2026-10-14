@@ -159,7 +159,7 @@ and set `SRPR_VAULT_ROOT` to the absolute path of your vault in the environment 
 
 ## Changelog
 
-### Unreleased
+### 1.7.0 — 2026-10-14
 
 - **Obsidian CLI commands** `sr-popup-review:state` and `sr-popup-review:check`, so external tools that edit your notes can check whether an edit would disturb the card open in the popup (#9)
 
