@@ -103,6 +103,47 @@ If a script or AI tool edits your flashcard notes while a popup is open, Spaced 
 - Pass `path` relative to the vault (an absolute path is `unsafe`).
 - In `old` / `new`, write a newline as `\n`, a tab as `\t` and a backslash as `\\`. Omit `new` to check a deletion.
 
+### Setup
+
+- Enable the command line interface in Obsidian's settings. Obsidian must be running.
+- When you call it from a shell on Windows such as Git Bash, write `obsidian.com` with the extension. Plain `obsidian` resolves to the GUI executable and returns no output.
+- If you have several vaults open, add `vault=<vault name>` to every command.
+
+### How to integrate (any tool)
+
+1. Right before writing to a note, call `check`.
+2. If it answers `safe`, write.
+3. If it answers `unsafe`, if the command fails, or if the answer cannot be parsed, do not write. Wait until `state` is `idle` (the popup is closed), then try again.
+4. After writing, read the file back and confirm your change is still there. If a rating is saved between your `check` and your write, Spaced Repetition's write can overwrite yours.
+
+If you rewrite a whole file, you can still use `check`: pass the file's current full text as `old` and the new full text as `new` (mind your OS's command-line length limit). Or simply write only while `state` is `idle`.
+
+### Example: a Claude Code hook
+
+[`examples/claude-code/sr-popup-guard.mjs`](examples/claude-code/sr-popup-guard.mjs) is a dependency-free Node script for Claude Code's `PreToolUse` hook. Register it in `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          { "type": "command", "command": "node /path/to/sr-popup-guard.mjs" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+and set `SRPR_VAULT_ROOT` to the absolute path of your vault in the environment Claude Code runs in (optionally `SRPR_VAULT_NAME`, passed as `vault=`).
+
+- Only `.md` files under `SRPR_VAULT_ROOT` are checked; every other edit passes. Without `SRPR_VAULT_ROOT` the script does nothing.
+- A normal `Edit` is sent to `check`. `Write` and `Edit` with `replace_all` touch more than one spot, so they use `state`: allowed when `idle` (or when a different note is showing), denied when `preparing`, `writing`, or when the open card is in the same note.
+- When denied, Claude is told to close the popup and redo the same edit.
+- If Obsidian is not running, the commands fail. The popup only appears while Obsidian is running, so writing would actually be fine then, but the script leans safe and denies. Edit the script if you prefer otherwise.
+
 ## Data safety
 
 - Ratings go through `Spaced Repetition`'s own review sequencer — identical writes to pressing the buttons in its modal (scheduling comment, sibling burying, load balancing, FSRS/SM-2, all of it).

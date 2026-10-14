@@ -103,6 +103,47 @@ Spaced Repetition **v1.15.4** で動作確認しています。
 - `path` は vault 内の相対パスで渡します（絶対パスは `unsafe`）
 - `old` / `new` の中の改行は `\n`、タブは `\t`、バックスラッシュは `\\` と書きます。削除を確かめるときは `new` を省略します
 
+### 準備
+
+- Obsidian の設定で CLI を有効にします。Obsidian が起動している必要があります。
+- Windows の Git Bash などのシェルから呼ぶときは `obsidian.com` と拡張子付きで呼びます。`obsidian` だけだと GUI 版の実行ファイルに解決され、出力が返りません。
+- 複数の vault を開いているときは、すべてのコマンドに `vault=<vault 名>` を付けます。
+
+### 連携の手順（どのツールでも同じ）
+
+1. ノートを書き換える直前に `check` を呼ぶ
+2. `safe` なら書く
+3. `unsafe`・コマンドの失敗・解釈できない応答のときは書かずに待ち、`state` が `idle`（ポップアップを閉じた状態）になってからやり直す
+4. 書いた後にファイルを読み直し、自分の変更が残っていることを確かめる。`check` と書き込みの間に採点が保存されると、Spaced Repetition の書き込みに上書きされることがあるため
+
+ファイル全体を書き直すときも `check` で判定できます。`old` に今の全文、`new` に新しい全文を渡します（OS のコマンドライン長の上限に注意）。または `state` が `idle` のときだけ書く方法もあります。
+
+### 例: Claude Code の hook
+
+[`examples/claude-code/sr-popup-guard.mjs`](examples/claude-code/sr-popup-guard.mjs) は、Claude Code の `PreToolUse` hook 用の依存なしの Node スクリプトです。`.claude/settings.json` に登録します。
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          { "type": "command", "command": "node /path/to/sr-popup-guard.mjs" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Claude Code を動かす環境で、環境変数 `SRPR_VAULT_ROOT` に vault の絶対パスを設定します（任意で `SRPR_VAULT_NAME`。`vault=` として渡されます）。
+
+- `SRPR_VAULT_ROOT` 配下の `.md` ファイルだけを確かめ、それ以外の編集は通します。`SRPR_VAULT_ROOT` が未設定なら何もしません。
+- 通常の `Edit` は `check` に送ります。`Write` と `replace_all` 付きの `Edit` は複数箇所に触れるため `state` で判断します。`idle`（または別のノートを表示中）なら通し、`preparing`・`writing`、または表示中のカードが同じノートのときは止めます。
+- 止めるときは、Claude に「ポップアップを閉じてから同じ編集をやり直す」よう伝えます。
+- Obsidian が起動していないとコマンドは失敗します。ポップアップは Obsidian の起動中にしか出ないので、その場合は書いても問題ないのですが、このスクリプトは安全側に倒して止めます。そうしたくなければスクリプトを書き換えてください。
+
 ## データの安全性
 
 - 評価は Spaced Repetition 自身のレビューシーケンサーを通ります。モーダルのボタンを押した場合と**同一の書き込み**です（スケジュールコメント、兄弟カードのbury、ロードバランス、FSRS/SM-2すべて含む）。
