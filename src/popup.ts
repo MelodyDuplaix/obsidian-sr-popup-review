@@ -1,4 +1,4 @@
-import { App, Component, MarkdownRenderer, Notice } from "obsidian";
+import { App, Component, MarkdownRenderer, Notice, TFile } from "obsidian";
 import { IntervalPreview, RateOutcome, RatingKey, ReviewResponse, ReviewResponseValue, ReviewSession } from "./sr-bridge";
 import type { GlobalShortcutLike } from "./global-shortcut";
 import type { ReviewStateTracker } from "./review-state";
@@ -199,6 +199,18 @@ function escapeHtml(s: string): string {
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
 }
+
+const IMAGE_EXTENSIONS: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    svg: "image/svg+xml",
+    bmp: "image/bmp",
+    avif: "image/avif",
+    ico: "image/x-icon",
+};
 
 /**
  * Splits every paragraph that contains line breaks (`<p>a<br>b</p>`) into one
@@ -765,16 +777,192 @@ export class PopupController {
         if (endedVisibleSession) this.onSessionEnd();
     }
 
-    private async renderMarkdown(markdown: string): Promise<string> {
+    private async renderMarkdown(markdown: string, notePath: string | null): Promise<string> {
         const el = createDiv();
         try {
-            await MarkdownRenderer.render(this.app, markdown, el, "", this.owner);
+            await MarkdownRenderer.render(this.app, markdown, el, notePath ?? "", this.owner);
+            await this.inlineImages(el, notePath);
             splitLineBreaks(el);
             return el.innerHTML;
         } catch (e) {
             console.error("[sr-popup-review] markdown render failed, using plain text", e);
             return '<pre style="white-space:pre-wrap">' + escapeHtml(markdown) + "</pre>";
         }
+    }
+
+    private arrayBufferToBase64(buffer: ArrayBuffer): string {
+        try {
+            const buf =
+                (window as Window & { Buffer?: typeof Buffer }).Buffer ??
+                (typeof Buffer !== "undefined" ? Buffer : null);
+            if (buf) {
+                return buf.from(buffer).toString("base64");
+            }
+        } catch {
+            /* fall through to btoa */
+        }
+        let binary = "";
+        const bytes = new Uint8Array(buffer);
+        const len = bytes.byteLength;
+        for (let i = 0; i < len; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        return window.btoa(binary);
+    }
+
+    private isImageExtension(ext: string): boolean {
+        return ext.toLowerCase() in IMAGE_EXTENSIONS;
+    }
+
+    private async fileToDataUrl(file: TFile): Promise<string | null> {
+        try {
+            const ext = file.extension.toLowerCase();
+            const mime = IMAGE_EXTENSIONS[ext] ?? "image/png";
+            const buffer = await this.app.vault.readBinary(file);
+            const base64 = this.arrayBufferToBase64(buffer);
+            return `data:${mime};base64,${base64}`;
+        } catch (e) {
+            console.error("[sr-popup-review] failed to convert image to data URL", file.path, e);
+            return null;
+        }
+    }
+
+    private resolveLinkToTFile(linktext: string, notePath: string | null): TFile | null {
+        if (!linktext) return null;
+        const clean = linktext.split("|")[0].split("#")[0].trim();
+        if (!clean) return null;
+
+        let file = this.app.metadataCache.getFirstLinkpathDest(clean, notePath ?? "");
+        if (file instanceof TFile) return file;
+
+        try {
+            const decoded = decodeURIComponent(clean);
+            if (decoded !== clean) {
+                file = this.app.metadataCache.getFirstLinkpathDest(decoded, notePath ?? "");
+                if (file instanceof TFile) return file;
+            }
+        } catch {
+            /* ignore decode error */
+        }
+
+        const direct = this.app.vault.getAbstractFileByPath(clean);
+        if (direct instanceof TFile) return direct;
+
+        try {
+            const decodedDirect = this.app.vault.getAbstractFileByPath(decodeURIComponent(clean));
+            if (decodedDirect instanceof TFile) return decodedDirect;
+        } catch {
+            /* ignore decode error */
+        }
+
+        return null;
+    }
+
+    private resolveFileFromAppUrl(urlStr: string): TFile | null {
+        try {
+            const url = new URL(urlStr);
+            let pathname = decodeURIComponent(url.pathname);
+            if (/^\/[A-Za-z]:/.test(pathname)) {
+                pathname = pathname.slice(1);
+            }
+            pathname = pathname.replace(/\\/g, "/");
+
+            const adapter = this.app.vault.adapter as { getBasePath?: () => string };
+            const basePath = typeof adapter.getBasePath === "function" ? adapter.getBasePath() : null;
+            if (basePath) {
+                const normBase = basePath.replace(/\\/g, "/").replace(/\/+$/, "");
+                if (pathname.toLowerCase().startsWith(normBase.toLowerCase() + "/")) {
+                    const relPath = pathname.slice(normBase.length + 1);
+                    const file = this.app.vault.getAbstractFileByPath(relPath);
+                    if (file instanceof TFile) return file;
+                }
+            }
+
+            const filename = pathname.split("/").pop();
+            if (filename) {
+                const file = this.app.metadataCache.getFirstLinkpathDest(filename, "");
+                if (file instanceof TFile && (pathname.endsWith("/" + file.path) || pathname === file.path)) {
+                    return file;
+                }
+            }
+        } catch {
+            /* URL parse failure */
+        }
+        return null;
+    }
+
+    private async inlineImages(root: HTMLElement, notePath: string | null): Promise<void> {
+        const imgs = Array.from(root.querySelectorAll("img"));
+        await Promise.all(
+            imgs.map(async (img) => {
+                const src = img.getAttribute("src") ?? "";
+                if (src.startsWith("data:") || src.startsWith("http://") || src.startsWith("https://")) {
+                    return;
+                }
+
+                let file: TFile | null = null;
+                const parentEmbed = img.closest(".internal-embed, .file-embed");
+                const embedSrc = parentEmbed?.getAttribute("src") ?? parentEmbed?.getAttribute("alt");
+                if (embedSrc) {
+                    file = this.resolveLinkToTFile(embedSrc, notePath);
+                }
+
+                if (!file) {
+                    const alt = img.getAttribute("alt");
+                    if (alt) {
+                        file = this.resolveLinkToTFile(alt, notePath);
+                    }
+                }
+
+                if (!file && src.startsWith("app://")) {
+                    file = this.resolveFileFromAppUrl(src);
+                }
+
+                if (!file && src) {
+                    file = this.resolveLinkToTFile(src, notePath);
+                }
+
+                if (file instanceof TFile) {
+                    const dataUrl = await this.fileToDataUrl(file);
+                    if (dataUrl) {
+                        img.setAttribute("src", dataUrl);
+                    }
+                }
+            }),
+        );
+
+        const embeds = Array.from(root.querySelectorAll(".internal-embed, .file-embed"));
+        await Promise.all(
+            embeds.map(async (embed) => {
+                if (embed.querySelector("img")) return;
+                const rawLink = embed.getAttribute("src") ?? embed.getAttribute("alt") ?? "";
+                const file = this.resolveLinkToTFile(rawLink, notePath);
+                if (file instanceof TFile && this.isImageExtension(file.extension)) {
+                    const dataUrl = await this.fileToDataUrl(file);
+                    if (dataUrl) {
+                        const img = createEl("img");
+                        img.src = dataUrl;
+                        img.alt = file.name;
+
+                        const parts = rawLink.split("|");
+                        if (parts.length > 1) {
+                            const sizeSpec = parts[parts.length - 1].trim();
+                            const match = sizeSpec.match(/^(\d+)(?:x(\d+))?$/);
+                            if (match) {
+                                img.setAttribute("width", match[1]);
+                                if (match[2]) img.setAttribute("height", match[2]);
+                            }
+                        } else {
+                            const w = embed.getAttribute("width");
+                            const h = embed.getAttribute("height");
+                            if (w) img.setAttribute("width", w);
+                            if (h) img.setAttribute("height", h);
+                        }
+                        embed.replaceWith(img);
+                    }
+                }
+            }),
+        );
     }
 
     private async buildHtml(
@@ -784,8 +972,8 @@ export class PopupController {
         /** Append the DOM-snapshot reporter (local page). Off = HTML unchanged. */
         withMirror: boolean,
     ): Promise<string> {
-        const frontHtml = await this.renderMarkdown(session.front);
-        const backHtml = await this.renderMarkdown(session.back);
+        const frontHtml = await this.renderMarkdown(session.front, session.notePath);
+        const backHtml = await this.renderMarkdown(session.back, session.notePath);
         const dark = activeDocument.body.classList.contains("theme-dark");
         const headerParts: string[] = [];
         if (showDeckName && session.deckName) headerParts.push(escapeHtml(session.deckName));
@@ -872,7 +1060,8 @@ body {
 }
 .menu button:hover { background: var(--btn-bg); }
 .content { flex: 1; overflow-y: auto; overflow-x: auto; padding: 2px 16px 10px; }
-.content img { max-width: 100%; }
+.content img { max-width: 100%; height: auto; }
+.content .internal-embed.image-embed { display: inline-block; max-width: 100%; }
 .content hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
 /* Obsidian's renderer emits plain <table>s; without the app CSS they have no grid. */
 .content table { border-collapse: collapse; margin: 8px 0; font-size: 13px; }

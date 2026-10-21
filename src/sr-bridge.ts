@@ -395,6 +395,8 @@ export interface ReviewSession {
      * would touch the open card; null when either is unknown.
      */
     question: ActiveQuestion | null;
+    /** Vault-relative path of the note containing the card, e.g. "Notes/Card.md"; null when unknown. */
+    notePath: string | null;
 }
 
 export type ProbeStatus = "ok" | "missing" | "notReady" | "incompatible";
@@ -652,6 +654,9 @@ export class SRBridge {
         const boundSequencer = sequencer;
         const location = noteSource ? `${noteSource.path}:${noteSource.line + 1}` : null;
         const question = this.activeQuestion(card, noteSource);
+        const notePath =
+            noteSource?.path ??
+            (typeof card.question?.note?.file?.path === "string" ? card.question.note.file.path : null);
         return {
             front: card.front.trimStart(),
             back: card.back,
@@ -683,6 +688,7 @@ export class SRBridge {
             location,
             openNote: noteSource ? () => this.openNoteAt(noteSource) : null,
             question,
+            notePath,
         };
     }
 
